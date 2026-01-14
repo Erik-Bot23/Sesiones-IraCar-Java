@@ -4,11 +4,11 @@ import java.util.List;
 public class ExcelParseRsponse {
     private String sheetName;
     private List<String> headers;
-    private List<String> rows;
+    private List<List<String>> rows;
     private int rowCount;
 
     public ExcelParseRsponse(){}
-    public ExcelParseRsponse(String sheetName, List<String> headers, List<String> rows){
+    public ExcelParseRsponse(String sheetName, List<String> headers, List<List<String>> rows){
         this.sheetName = sheetName;
         this.headers = headers;
         this.rows = rows;
@@ -25,8 +25,8 @@ public class ExcelParseRsponse {
         this.headers = headers;
     }
 
-    public List<String> getRows(){ return rows; }
-    public void setRows(List<String> rows){
+    public List<List<String>> getRows(){ return rows; }
+    public void setRows(List<List<String>> rows){
         this.rows = rows;
     }
 
