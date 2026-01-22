@@ -1,9 +1,11 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
     <meta charset="utf-8" />
     <title>Visor de Excel</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--Favicon para evitar 500-->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📊</text></svg>">
     <style>
         :root {--primary:#2563eb; --bg:#f6f7fb; --text:#334155; --border:#e2e8f0;}
         body {font-family: system-ui, Segoe UI, Roboto, Arial; margin: 0; background:var(--bg);
@@ -36,25 +38,25 @@
 <body>
     <header>
         <h1>Visor de Excel</h1>
-        <div>
+        <div class="toolbar row">
             <input id="fileInput" type="file" accept=".xlsx,.xls"/>
             <label for="sheetIndex">Hoja</label>
             <input id="sheetIndex" type="number" value="0" min="0"/>
-            <button id="uploadBtn">Cargar</button>
-            <button id="downloadCsvBtn" class="secondary" disabled>Descargar CSV</button>
+            <button id="uploadBtn" type="button">Cargar Excel</button>
+            <button id="downloadCsvBtn" type="button" class="secondary" disabled>Descargar CSV</button>
             <span id¨="status"></span>
         </div>
     </header>
 
     <main class="card">
-        <div class="row" style="margin-bottom: 8px;">
+        <div class="row" style="margin-bottom:8px;">
             <div id="meta" class="pill">Sin datos cargados</div>
             <div class="spacer"></div>
-            <div id="previewInfo" class="pill" style="display: none;"></div>
+            <div id="previewInfo" class="pill" style="display:none;"></div>
         </div>
         <div class="scroll">
             <table id="resultTable" aria-live="polite">
-                <thead><tr id="headerow"></tr></thead>
+                <thead><tr id="headerRow"></tr></thead>
                 <tbody id="bodyRows"></tbody>
             </table>
         </div>
@@ -65,137 +67,156 @@
     </footer>
 
     <script>
-        const API_URL='/api/excel/parse'; //Como se sirve desde el mismos backend, no hay CORS
-        const MAX_PREVIEW_ROWS = 500; // limita el render para mantener la UI fluida
+        document.addEventListener('DOMContentLoaded', () => {
+            const API_URL='/api/excel/parse'; //Como se sirve desde el mismos backend, no hay CORS
+            const MAX_PREVIEW_ROWS = 500; // limita el render para mantener la UI fluida
 
-        const els = {
-            file: document.getElementById('fileInput'),
-            sheet: document.getElementById('sheetIndex'),
-            upload: document.getElementById('uploadBtn'),
-            downloadCsv: document.getElementById('downloadCsvBtn'),
-            status: document.getElementById('status'),
-            meta: document.getElementById('meta'),
-            previewInfo: document.getElementById('previewInfo'),
-            headerRow: document.getElementById('headerRow'),
-            bodyRows: document.getElementById('bodyRows'),
-        };
-
-        let lastResponse = null;
-
-        function setStatus(text, ok=true){
-            els.status.textContent = text;
-            els.status.style.color = ok ? '#16a34a' : '#dc2626';
-        }
-
-        function renderTable(headers = [], rows = []){
-            //Header
-            els.headerRow.innerHTML = '';
-            const fragHeader = document.createDocumentFragment();
-            (headers.length ? headers : []).forEach((h,i) => {
-                const th = document.createElement('th');
-                th.textContent =h && h.trim().length ? h : `Col ${i+1}`;
-                fragHeader.appendChild(th);
-            });
-            els.headerRow,appendChild(fragHeader);
-
-            //Body (limit preview)
-            els.bodyRows.innerHTML = '';
-            const fragBody = document.createDocumentFragment();
-            const toRender = rows.slice(0, MAX_PREVIEW_ROWS);
-            toRender.forEach(row => {
-                const tr = document.createElement('tr');
-                row.forEach(cell => {
-                    const td = document.createElement('td');
-                    td.textContent = cell ?? '';
-                    tr.appendChild(td);
-                });
-                fragBody.appendChild(tr);
-            });
-            els.bodyRows.appendChild(fragBody);
-
-            // Preview info
-            if (rows.length > MAX_PREVIEW_ROWS) {
-                els.previewInfo.style.display = '';
-                els.previewInfo.textContent = `Mostrando ${MAX_PREVIEW_ROWS} DE ${rows.length} filas`;
-            } else {
-                els.previewInfo.style.display = 'none';
-            }
-        }
-
-        function toCSV(headers = [], rows = []){
-            const escape = (v) => {
-                const s = (v ?? '').toString();
-                //Escapa comillas y separadores; envuelve en comillas si hay coma o salto de línea
-                const needsQuote = /[",\n]/.test(s);
-                const out = s.replace(/"/g,'""');
-                return needsQuote ? '"${out}"' : out;
+            const els = {
+                file: document.getElementById('fileInput'),
+                sheet: document.getElementById('sheetIndex'),
+                upload: document.getElementById('uploadBtn'),
+                downloadCsv: document.getElementById('downloadCsvBtn'),
+                status: document.getElementById('status'),
+                meta: document.getElementById('meta'),
+                previewInfo: document.getElementById('previewInfo'),
+                headerRow: document.getElementById('headerRow'),
+                bodyRows: document.getElementById('bodyRows'),
             };
-            const all = [];
-            if (headers && headers.length) all.push(headers.map(escape).join(','));
-            for (const r of rows) all.push(r.map(escape).join(','));
-            return all.join('\n');
-        }
 
-        async function uploadExcel() {
-            const file = els.file.files[0];
-            const sheetIndex = parseInt(els.sheet.value || '0', 10);
+            function ensure(el, id){
+                if(!el) throw new Error(`Elemento con id="${id}" no encontrado en el DOM`);
+                return el;
+            }
+            //Validamos que existan
+            ensure(els.file, 'fileInput');
+            ensure(els.sheet, 'sheetIndex');
+            ensure(els.upload, 'uploadBtn');
+            ensure(els.downloadCsv, 'downloadCsvBtn');
+            ensure(els.status, 'status');
+            ensure(els.meta, 'meta');
+            ensure(els.previewInfo, 'previewInfo');
+            ensure(els.headerRow, 'headerRow');
+            ensure(els.bodyRows, 'bodyRows');
 
-            if(!file){
-                setStatus('Selecciona  un archivo .xlsx o .xls', false);
-                return;
+            let lastResponse = null;
+
+            function setStatus(text, ok=true){
+                els.status.textContent = text;
+                els.status.style.color = ok ? '#16a34a' : '#dc2626';
             }
 
-            if(isNaN(sheetIndex) || sheetIndex < 0){
-                setStatus('El índice de hpja debe ser un número >= 0', false);
-                return;
-            }
+            function renderTable(headers = [], rows = []){
+                //Header
+                els.headerRow.innerHTML = '';
+                const fragHeader = document.createDocumentFragment();
+                (headers.length ? headers : []).forEach((h,i) => {
+                    const th = document.createElement('th');
+                    th.textContent =h && h.trim().length ? h : `Col ${i+1}`;
+                    fragHeader.appendChild(th);
+                });
+                els.headerRow,appendChild(fragHeader);
 
-            els.upload.disabled = true;
-            els.downloadCsv.disabled = true;
-            setStatus('Cargando y procesando ... ', true);
+                //Body (limit preview)
+                els.bodyRows.innerHTML = '';
+                const fragBody = document.createDocumentFragment();
+                const toRender = rows.slice(0, MAX_PREVIEW_ROWS);
+                toRender.forEach(row => {
+                    const tr = document.createElement('tr');
+                    row.forEach(cell => {
+                        const td = document.createElement('td');
+                        td.textContent = cell ?? '';
+                        tr.appendChild(td);
+                    });
+                    fragBody.appendChild(tr);
+                });
+                els.bodyRows.appendChild(fragBody);
 
-            try{
-                const form = new FormData();
-                form.append('file', file);
-                const url = `${API_URL} ? sheetIndex=${encodeURIComponent(sheetIndex)}`;
-
-                const resp = await fetch(url, {method: 'POST', body:form});
-                if(!resp.ok){
-                    const text = await resp.text();
-                    throw new Error(text || `Error HTTP ${resp.status}`);
+                // Preview info
+                if (rows.length > MAX_PREVIEW_ROWS) {
+                    els.previewInfo.style.display = '';
+                    els.previewInfo.textContent = `Mostrando ${MAX_PREVIEW_ROWS} de ${rows.length} filas`;
+                } else {
+                    els.previewInfo.style.display = 'none';
                 }
-                lastResponse = await resp.json();
-                const {sheetName, headers, rows, rowConunt} = lastResponse;
-                els.meta.textContent = `Hoja: ${sheetName} • Filas: ${rowCount}`;
-                renderTable(headers, rows);
-                setStatus('Listo ✅', true); 
-                els.downloadCsv.disabled = false;
-            } catch(err){
-                console.error(err);
-                setStatus(`Error: ${err.message}`, false);
-                els.meta.textContent = 'Sin datos cargados';
-                renderTable([],[]);
-                els.downloadCsv.disabled = true;
-            } finally {
-                els.upload.disabled = false;
             }
-        }
 
-        function downloadCsv(){
-            if (!lastResponse) return;
-            const csv = toCSV(lastResponse.headers, lastResponse.rows);
-            const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            const name = (lastResponse.sheetName || 'datos').replace(/[^\w\-]+/g,'_');
-            a.href = url;
-            a.download = `${name}.csv`;
-            a.click();
-            URL.revokeObjectURL(url);
-        }
+            function toCSV(headers = [], rows = []){
+                const escape = (v) => {
+                    const s = (v ?? '').toString();
+                    //Escapa comillas y separadores; envuelve en comillas si hay coma o salto de línea
+                    const needsQuote = /[",\n]/.test(s);
+                    const out = s.replace(/"/g,'""');
+                    return needsQuote ? '"${out}"' : out;
+                };
+                const all = [];
+                if (headers && headers.length) all.push(headers.map(escape).join(','));
+                for (const r of rows) all.push(r.map(escape).join(','));
+                return all.join('\n');
+            }
 
-        els.upload.addEventListener('click', uploadExcel);
-        els.downloadCsv.addEventListener('click', downloadCsv);
+            async function uploadExcel() {
+                const file = els.file.files[0];
+                const sheetIndex = parseInt(els.sheet.value || '0', 10);
+
+                if(!file){
+                    setStatus('Selecciona  un archivo .xlsx o .xls', false);
+                    return;
+                }
+
+                if(isNaN(sheetIndex) || sheetIndex < 0){
+                    setStatus('El índice de hoja debe ser un número >= 0', false);
+                    return;
+                }
+
+                els.upload.disabled = true;
+                els.downloadCsv.disabled = true;
+                setStatus('Cargando y procesando ... ', true);
+
+                try{
+                    const form = new FormData();
+                    form.append('file', file);
+                    const url = `${API_URL} ? sheetIndex=${encodeURIComponent(sheetIndex)}`;
+
+                    const resp = await fetch(url, {method: 'POST', body:form});
+                    const contentType = resp.headers.get('content-type') || '';
+                    if(!resp.ok){
+                        const text = await resp.text();
+                        throw new Error(text || `Error HTTP ${resp.status}`);
+                    }
+                    lastResponse = await resp.json();
+                    const {sheetName, headers, rows, rowConunt} = lastResponse;
+                    els.meta.textContent = `Hoja: ${sheetName} • Filas: ${rowCount}`;
+                    renderTable(headers, rows);
+                    setStatus('Listo ✅', true); 
+                    els.downloadCsv.disabled = false;
+                } catch(err){
+                    console.error(err);
+                    setStatus(`Error: ${err.message}`, false);
+                    els.meta.textContent = 'Sin datos cargados';
+                    renderTable([],[]);
+                    els.downloadCsv.disabled = true;
+                } finally {
+                    els.upload.disabled = false;
+                }
+            }
+
+            function downloadCsv(){
+                if (!lastResponse) return;
+                const csv = toCSV(lastResponse.headers, lastResponse.rows);
+                const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                const name = (lastResponse.sheetName || 'datos').replace(/[^\w\-]+/g,'_');
+                a.href = url;
+                a.download = `${name}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
+            }
+
+            els.upload.addEventListener('click', uploadExcel);
+            els.downloadCsv.addEventListener('click', downloadCsv);
+        })
+        
     </script>
 </body>
 </html>
