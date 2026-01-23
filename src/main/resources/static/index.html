@@ -44,7 +44,7 @@
             <input id="sheetIndex" type="number" value="0" min="0"/>
             <button id="uploadBtn" type="button">Cargar Excel</button>
             <button id="downloadCsvBtn" type="button" class="secondary" disabled>Descargar CSV</button>
-            <span id¨="status"></span>
+            <span id="status"></span>
         </div>
     </header>
 
@@ -68,7 +68,8 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            const API_URL='/api/excel/parse'; //Como se sirve desde el mismos backend, no hay CORS
+            const API_URL='/api/excel/parse/select'; //Como se sirve desde el mismos backend, no hay CORS
+            const TARGET_COLUMNS = ["UBICACIÓN", "NOMBRE","FECHA","HORA"];
             const MAX_PREVIEW_ROWS = 500; // limita el render para mantener la UI fluida
 
             const els = {
@@ -111,10 +112,10 @@
                 const fragHeader = document.createDocumentFragment();
                 (headers.length ? headers : []).forEach((h,i) => {
                     const th = document.createElement('th');
-                    th.textContent =h && h.trim().length ? h : `Col ${i+1}`;
+                    th.textContent = h && h.trim().length ? h : `Col ${i+1}`;
                     fragHeader.appendChild(th);
                 });
-                els.headerRow,appendChild(fragHeader);
+                els.headerRow.appendChild(fragHeader);
 
                 //Body (limit preview)
                 els.bodyRows.innerHTML = '';
@@ -175,7 +176,8 @@
                 try{
                     const form = new FormData();
                     form.append('file', file);
-                    const url = `${API_URL} ? sheetIndex=${encodeURIComponent(sheetIndex)}`;
+                    const columnsParam=encodeURIComponent(TARGET_COLUMNS.join(','));
+                    const url = `${API_URL}?sheetIndex=${encodeURIComponent(sheetIndex)}&columns=${columnsParam}`;
 
                     const resp = await fetch(url, {method: 'POST', body:form});
                     const contentType = resp.headers.get('content-type') || '';
@@ -183,11 +185,25 @@
                         const text = await resp.text();
                         throw new Error(text || `Error HTTP ${resp.status}`);
                     }
+
+                    const data = contentType.includes('application/json') ? await resp.json() : null;
+                    if(!data) throw new Error('Respuesta inesperada del servidor');
+
                     lastResponse = await resp.json();
-                    const {sheetName, headers, rows, rowConunt} = lastResponse;
-                    els.meta.textContent = `Hoja: ${sheetName} • Filas: ${rowCount}`;
-                    renderTable(headers, rows);
+                    const {sheetName, columns, rows, rowCount, dataStartRowIndex} = lastResponse;
+                    
+                    // Para /api/excel/parse → { headers, rows, rowCount, sheetName }
+                    // Para /api/excel/parse/select → { columns, rows, rowCount, sheetName, dataStartRowIndex }
+
+                    //const headers = data.headers || data.columns || [];
+                    //const rows = data.rows || [];
+                    //const sheetName = data.sheetName || 'Hoja';
+                    //const rowCount = data.rowCount || rows.length;
+
+                    els.meta.textContent = `Hoja: ${sheetName} • Filas: ${rowCount} • Datos desde fila ${dataStartRowIndex+1}`;
+                    renderTable(columns, rows);
                     setStatus('Listo ✅', true); 
+                    //lastResponse = {headers, rows, sheetName};
                     els.downloadCsv.disabled = false;
                 } catch(err){
                     console.error(err);
@@ -213,10 +229,10 @@
                 URL.revokeObjectURL(url);
             }
 
+            //Enganchar listeners una vez que el DOM existe
             els.upload.addEventListener('click', uploadExcel);
             els.downloadCsv.addEventListener('click', downloadCsv);
-        })
-        
+        });
     </script>
 </body>
 </html>
