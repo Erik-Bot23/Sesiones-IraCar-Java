@@ -69,7 +69,7 @@
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const API_URL='/api/excel/parse/select'; //Como se sirve desde el mismos backend, no hay CORS
-            const TARGET_COLUMNS = ["UBICACIÓN", "NOMBRE","FECHA","HORA"];
+            const TARGET_COLUMNS = ["UBICACIÓN","NOMBRE","FECHA","HORA", "TERMINAL_CF13"];
             const MAX_PREVIEW_ROWS = 500; // limita el render para mantener la UI fluida
 
             const els = {

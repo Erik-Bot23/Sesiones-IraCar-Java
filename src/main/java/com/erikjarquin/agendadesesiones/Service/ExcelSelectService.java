@@ -1,6 +1,8 @@
 package com.erikjarquin.agendadesesiones.Service;
 
 import com.erikjarquin.agendadesesiones.DTO.ExcelSelectColumnsResponse;
+
+import org.apache.poi.ss.format.CellTextFormatter;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
 import org.springframework.stereotype.Service;
@@ -18,7 +20,10 @@ public class ExcelSelectService {
                                                             Integer sheetIndex,
                                                             List<String> desiredColumns,
                                                             int headerSearchRows,
-                                                            int stopAfterEmptyRows) throws Exception {
+                                                            int stopAfterEmptyRows,
+                                                            String filtroTerminal,
+                                                            String filtroUbicación,
+                                                            String filtroFecha) throws Exception {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("No se recibió archivo.");
         }
@@ -37,10 +42,12 @@ public class ExcelSelectService {
             String sheetName = wb.getSheetName(sheetIndex);
             DataFormatter fmt = new DataFormatter();
 
-            // Normalizamos nombres objetivo (sin acentos/mayúsculas)
-            List<String> targets = desiredColumns.stream()
-                    .map(ExcelSelectService::normalize)
-                    .collect(Collectors.toList());
+            // Normaliza columnas deseadas (admite TERMINAL_CF13 / TERMINAL_CF12)
+            List <String> targets = desiredColumns.stream().map(s -> {
+                String n = normalize(s);
+                if (n.equals("terminal_cf13") || n.equals("terminal_cf12")) return n;
+                return n;
+            }).toList();
 
             // Buscamos la fila de encabezados (la primera donde aparezcan TODOS los targets)
             HeaderDetection hd = findHeaderRowAndColumns(sheet, fmt, targets, headerSearchRows);
@@ -50,8 +57,8 @@ public class ExcelSelectService {
 
             int dataStart = hd.headerRow + 1;
 
-            // Leemos filas desde dataStart, extrayendo solo los índices detectados
-            List<List<String>> rows = new ArrayList<>();
+            // Lee todas las filas
+            List<List<String>> allRows = new ArrayList<>();
             int emptyInARow = 0;
             for (int r = dataStart; r <= sheet.getLastRowNum(); r++) {
                 Row row = sheet.getRow(r);
@@ -75,31 +82,91 @@ public class ExcelSelectService {
                     if (emptyInARow >= stopAfterEmptyRows) break;
                 } else {
                     emptyInARow = 0;
-                    rows.add(out);
+                    allRows.add(out);
                 }
             }
+
+            // Filtros
+            final List<String> headerPretty = desiredColumns; // Columnas como las pidió el usurio
+            //Índices de columnas para filtrar (normalizados)
+            int idxUbic = indexOfNormalized(headerPretty, "ubicación");
+
+            //Esta línea para que sirve, ya que si la desmarco me marco error en la variable idxUbic en el if de la línea 108
+            //if (idxUbic < 0) idxUbic = indexOfNormalized(headerPretty, "ubicación"); 
+
+            int idxFecha = indexOfNormalized(headerPretty, "fecha");
+            // Terminal puede estar en CF13 y/o CF12
+            int idxTermCF13 = indexOfNormalized(headerPretty,"terminal_cf13");
+            int idxTermCF12 = indexOfNormalized(headerPretty,"terminal_cf12");
+
+            String fTerm = normalizeNullable(filtroTerminal);
+            String fUbic = normalizeNullable(filtroUbicación);
+            String fFecha = normalizeNullable(filtroFecha);
+
+            List<List<String>> filtered = allRows.stream().filter(row ->{
+                boolean ok = true;
+
+                if (fUbic != null && idxUbic >= 0){
+                    String v = normalize(row.get(idxUbic));
+                    ok &= v.contains(fUbic);
+                }
+
+                if (fFecha != null && idxFecha >= 0){
+                    String v = normalize(row.get(idxFecha));
+                    ok &= v.contains(fFecha);
+                }
+
+                if (fTerm != null && idxTermCF13 >= 0 || idxTermCF12 >= 0){
+                    boolean match13 = false, match12 = false;
+                    if (idxTermCF13 >= 0) match13 = normalize(row.get(idxTermCF13)).contains(fTerm);
+                    if (idxTermCF12 >= 0) match12 = normalize(row.get(idxTermCF12)).contains(fTerm);
+                    ok &= (match13 || match12);
+                }
+                return ok;
+            }).toList();
 
             // Devuelve las columnas en su forma “bonita” original (las que pidió el usuario)
             return new ExcelSelectColumnsResponse(
                     sheetName,
-                    desiredColumns,
-                    rows,
+                    headerPretty,
+                    filtered,
                     hd.headerRow,
                     dataStart
             );
         }
     }
 
-    // === Utilidades ===
+    //Helpers para filtros
+    private static int indexOfNormalized(List<String> headers, String target){
+        String t = normalize(target);
+        for (int i=0; i<headers.size();i++){
+            String h = headers.get(i);
+            if (normalize(h).equals(t)) return i;
+        }
+        return -1;
+    }
 
+    private static String normalizeNullable(String s){
+        if (s==null || s.isBlank()) return null;
+        return normalize(s);
+    }
+
+    // === Utilidades ===
     private static class HeaderDetection {
         int headerRow;
         Map<String, Integer> colIndexByTarget; // clave = target normalizado, valor = índice de columna
     }
 
-    private static HeaderDetection findHeaderRowAndColumns(Sheet sheet, DataFormatter fmt, List<String> targets, int searchRows) {
+    private static HeaderDetection findHeaderRowAndColumns(Sheet sheet, DataFormatter fmt, List<String> targetsRaw, int searchRows) {
+        // Normaliza targets y admite TERMINAL_CF13 / TERMINAL_CF12
+        List<String> targets = targetsRaw.stream().map(t -> {
+            String n = normalize(t);
+            if (n.equals("terminal_cf13") || n.equals("terminal_cf12")) return n;
+            return n; // Ubicación, nombre, fecha, hora
+        }).toList();
+        
         int lastRow = Math.min(sheet.getLastRowNum(), searchRows);
-        int maxCols = estimateMaxCols(sheet, 5);
+        int maxCols = estimateMaxCols(sheet,5);
 
         for (int r = 0; r <= lastRow; r++) {
             Row row = sheet.getRow(r);
@@ -109,13 +176,16 @@ public class ExcelSelectService {
             for (int c = 0; c < maxCols; c++) {
                 // Obtenemos texto del posible encabezado en esta celda,
                 // resolviendo combinaciones/múltiples filas arriba
-                String headerTxt = headerTextWithMergedFallback(sheet, fmt, r, c, 2).trim();
-                if (headerTxt.isBlank()) continue;
+                String cellText = headerTextWithMergedFallback(sheet, fmt, r, c, 2).trim();
+                if (cellText.isBlank()) continue;
 
-                String norm = normalize(headerTxt);
+                String normCell = normalize(cellText);
+                String normPath = headerPathNormalized(sheet, fmt, r, c, 3); //Top->Down
+
+
                 for (String target : targets) {
-                    if (norm.equals(target)) {
-                        found.putIfAbsent(target, c);
+                    if (!found.containsKey(target) && matchesTargetWithHierarchy(target, normCell, normPath)) {
+                        found.put(target, c);
                     }
                 }
             }
@@ -190,5 +260,48 @@ public class ExcelSelectService {
                 .replaceAll("\\p{M}+", "");            // quita acentos
         return n.toLowerCase().replaceAll("\\s+", " ").trim();
     }
+
+    // Devuelve la "ruta" de encabezados: ejemplo "centro federal no.13 > datos de la cita > terminal"
+    private static String headerPathNormalized(Sheet sheet, DataFormatter fmt, int rowIndex, int colIndex, int lookUpLevels){
+        List<String> parts = new ArrayList<>();
+        for (int i = 0; i <= lookUpLevels; i++){
+            int r = rowIndex - i;
+            if (r<0) break;
+            String t = getCellTextResolvingMerged(sheet, fmt, rowIndex, colIndex);
+            if (t != null && !t.isBlank()) {
+                parts.add(normalize(t));
+            } 
+        }
+
+        // La ruta de arriba hacia abajo (top->down) ayuda a "contiene...terminal"
+        Collections.reverse(parts);
+        return String.join(" > ", parts);
+    }
+
+    private static boolean matchesTargetWithHierarchy(String target, String normCell, String normPath){
+        // Targets simples (ubicación, fecha, nombre, hora) igualan por texto directo o por segmentos de la ruta
+        if (!target.startsWith("terminal_")) {
+            if (normCell.equals(target)) return true;
+            //Coincide con cualquier segmento de la ruta
+            for (String seg : normPath.split(">")){
+                if (seg.trim().equals(target)) return true;
+            }
+            return false;
+        }
+        // Targets cualificados para terminal: terminal_cf13 / terminal_cf12
+        boolean isCF13 = target.equals("terminal_cf13");
+        boolean isCF12 = target.equals("terminal_cf12");
+
+        boolean hasTerminal = normPath.contains("terminal");
+        boolean hasCF13 = normPath.contains("centro federal no.13");
+        boolean hasCF12 = normPath.contains("centro federal no.12");
+
+        if (!hasTerminal) return false;
+        if (isCF13) return hasCF13;
+        if (isCF12) return hasCF12;
+        return false;
+    }
+
+
 }
 
