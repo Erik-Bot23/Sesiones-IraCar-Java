@@ -33,8 +33,8 @@ public class ExcelController {
     public ResponseEntity<?> parseExcelSelectingColumns(
         @RequestPart("file") MultipartFile file,
         @RequestParam(name="sheetIndex", required = false) Integer sheetIndex,
-        //Ahora el default incluye TERMINAL_CF13 (puedes agregar TERMINAL_CF12 si quieres ver ambas)
-        @RequestParam(name = "colums", required = false, defaultValue = "UBICACIÓN, NOMBRE, FECHA, HORA, TERMINAL_CF13") String columnsCsv,
+        //Ahora el default muestra CF13 y también CF12/CF16 si quieres verlos (el filtro terminal aplica solo a CF13)
+        @RequestParam(name = "colums", required = false, defaultValue = "UBICACIÓN, NOMBRE, FECHA, HORA, TERMINAL_CF13, TERMINAL_CF12, TERMINAL_CF16") String columnsCsv,
         @RequestParam(name = "headerSearchRows", required = false, defaultValue = "60") Integer headerSearchRows,
         @RequestParam(name = "stopAfterEmptyRows", required = false, defaultValue = "20") Integer stopAfterEmptyRows,
         //Filtros nuevos

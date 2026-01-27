@@ -86,18 +86,22 @@ public class ExcelSelectService {
                 }
             }
 
-            // Filtros
+            //=== Filtros ===//
             final List<String> headerPretty = desiredColumns; // Columnas como las pidió el usurio
             //Índices de columnas para filtrar (normalizados)
             int idxUbic = indexOfNormalized(headerPretty, "ubicación");
 
-            //Esta línea para que sirve, ya que si la desmarco me marco error en la variable idxUbic en el if de la línea 108
+            // Esta línea para que sirve?, ya que si la desmarco me marco error en la variable idxUbic en el if de la línea 113
             //if (idxUbic < 0) idxUbic = indexOfNormalized(headerPretty, "ubicación"); 
 
             int idxFecha = indexOfNormalized(headerPretty, "fecha");
-            // Terminal puede estar en CF13 y/o CF12
+
+            // Índeces para terminales por centro (puede que existan varios, pero el filtro sÓlo se aplica a CF13)
             int idxTermCF13 = indexOfNormalized(headerPretty,"terminal_cf13");
+            //Si además  muestras CF12/CF16/etc. Se verán en la tabla, pero no se usarán para filtrar
             int idxTermCF12 = indexOfNormalized(headerPretty,"terminal_cf12");
+            int idxTermCF16 = indexOfNormalized(headerPretty,"terminal_cf16");
+            // ... (puedes terner más si los agregas en columns)
 
             String fTerm = normalizeNullable(filtroTerminal);
             String fUbic = normalizeNullable(filtroUbicación);
@@ -116,11 +120,9 @@ public class ExcelSelectService {
                     ok &= v.contains(fFecha);
                 }
 
-                if (fTerm != null && idxTermCF13 >= 0 || idxTermCF12 >= 0){
-                    boolean match13 = false, match12 = false;
-                    if (idxTermCF13 >= 0) match13 = normalize(row.get(idxTermCF13)).contains(fTerm);
-                    if (idxTermCF12 >= 0) match12 = normalize(row.get(idxTermCF12)).contains(fTerm);
-                    ok &= (match13 || match12);
+                if (fTerm != null && idxTermCF13 >= 0){
+                    String v13 = normalize(row.get(idxTermCF13));
+                    ok &= v13.contains(fTerm);
                 }
                 return ok;
             }).toList();
@@ -136,7 +138,7 @@ public class ExcelSelectService {
         }
     }
 
-    //Helpers para filtros
+    //=== Helpers para filtros ===//
     private static int indexOfNormalized(List<String> headers, String target){
         String t = normalize(target);
         for (int i=0; i<headers.size();i++){
@@ -158,38 +160,29 @@ public class ExcelSelectService {
     }
 
     private static HeaderDetection findHeaderRowAndColumns(Sheet sheet, DataFormatter fmt, List<String> targetsRaw, int searchRows) {
-        // Normaliza targets y admite TERMINAL_CF13 / TERMINAL_CF12
-        List<String> targets = targetsRaw.stream().map(t -> {
-            String n = normalize(t);
-            if (n.equals("terminal_cf13") || n.equals("terminal_cf12")) return n;
-            return n; // Ubicación, nombre, fecha, hora
-        }).toList();
-        
+        // Normaliza targets (ej. ubicación, fecha, hora, nombre, terminal_cf13, terminal_cf12, ...)
+        List<String> targets = targetsRaw.stream().map(ExcelSelectService::normalize).toList();
         int lastRow = Math.min(sheet.getLastRowNum(), searchRows);
-        int maxCols = estimateMaxCols(sheet,5);
+        int maxCols = estimateMaxCols(sheet, 5);
 
-        for (int r = 0; r <= lastRow; r++) {
+        for (int r=0; r<=lastRow; r++){
             Row row = sheet.getRow(r);
-            if (row == null) continue;
+            if (row==null) continue;
 
             Map<String, Integer> found = new HashMap<>();
-            for (int c = 0; c < maxCols; c++) {
-                // Obtenemos texto del posible encabezado en esta celda,
-                // resolviendo combinaciones/múltiples filas arriba
+            for (int c=0; c<= maxCols; c++){
                 String cellText = headerTextWithMergedFallback(sheet, fmt, r, c, 2).trim();
                 if (cellText.isBlank()) continue;
 
                 String normCell = normalize(cellText);
                 String normPath = headerPathNormalized(sheet, fmt, r, c, 3); //Top->Down
 
-
-                for (String target : targets) {
-                    if (!found.containsKey(target) && matchesTargetWithHierarchy(target, normCell, normPath)) {
+                for(String target : targets){
+                    if (!found.containsKey(target) && matchesTargetWithHierarchy(target, normCell, normPath)){
                         found.put(target, c);
                     }
                 }
             }
-
             if (found.size() == targets.size()) {
                 HeaderDetection hd = new HeaderDetection();
                 hd.headerRow = r;
@@ -288,20 +281,20 @@ public class ExcelSelectService {
             }
             return false;
         }
-        // Targets cualificados para terminal: terminal_cf13 / terminal_cf12
-        boolean isCF13 = target.equals("terminal_cf13");
-        boolean isCF12 = target.equals("terminal_cf12");
 
+        // Targets para terminal con centro: terminal:cfNN
+        // Ej.: target = "terminal_cf13"
+        if (!target.startsWith("terminal_cf")) return false;
+
+        String digits = target.replaceFirst("^terminal_cf\\s*", "");
+        if (digits.isBlank()) return false;
+            
         boolean hasTerminal = normPath.contains("terminal");
-        boolean hasCF13 = normPath.contains("centro federal no.13");
-        boolean hasCF12 = normPath.contains("centro federal no.12");
-
-        if (!hasTerminal) return false;
-        if (isCF13) return hasCF13;
-        if (isCF12) return hasCF12;
-        return false;
+        boolean hasCFbyFull = normPath.contains("centro federal no."+ digits);
+        boolean hasCFbyCpsSpaced = normPath.contains("cps "+ digits);
+        boolean hasCFbyCpsCompact = normPath.contains("cps "+ digits);
+        boolean centerMatch = hasCFbyFull || hasCFbyCpsSpaced || hasCFbyCpsCompact;
+        return hasTerminal && centerMatch;
     }
-
-
 }
 
