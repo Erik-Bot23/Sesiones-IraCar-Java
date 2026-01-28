@@ -271,30 +271,77 @@ public class ExcelSelectService {
         return String.join(" > ", parts);
     }
 
-    private static boolean matchesTargetWithHierarchy(String target, String normCell, String normPath){
-        // Targets simples (ubicación, fecha, nombre, hora) igualan por texto directo o por segmentos de la ruta
-        if (!target.startsWith("terminal_")) {
-            if (normCell.equals(target)) return true;
-            //Coincide con cualquier segmento de la ruta
+    private static boolean matchesTargetWithHierarchy(String canonicalTarget, String normCell, String normPath){
+       String target = normalizeCanonical(canonicalTarget);
+
+        // 1) MODULO_UBICACION
+        if (target.equals("modulo_ubicacion")) {
+            //Coincide si la celda o cualquier segmento de la ruta está en los aliases
+            if (MODULO_UBI_ALIASES.contains(normCell)) return true;
             for (String seg : normPath.split(">")){
-                if (seg.trim().equals(target)) return true;
-            }
+                if (MODULO_UBI_ALIASES.contains(seg.trim())) return true;
+            } 
+            return true;
+        }
+
+        // 2) FECHA / HORA
+        if (target.equals("fecha")) {
+            if (FECHA_ALIASES.contains(normCell)) return true;
+            for (String seg : normPath.split(">")) if(FECHA_ALIASES.contains(seg.trim())) return true;
             return false;
         }
 
-        // Targets para terminal con centro: terminal:cfNN
-        // Ej.: target = "terminal_cf13"
-        if (!target.startsWith("terminal_cf")) return false;
+        if (target.equals("hora")){
+            if(HORA_ALIASES.contains(normCell)) return true;
+            for (String seg : normPath.split(">")) if(HORA_ALIASES.contains(seg.trim())) return true;
+            return false;
+        }
 
-        String digits = target.replaceFirst("^terminal_cf\\s*", "");
-        if (digits.isBlank()) return false;
-            
-        boolean hasTerminal = normPath.contains("terminal");
-        boolean hasCFbyFull = normPath.contains("centro federal no."+ digits);
-        boolean hasCFbyCpsSpaced = normPath.contains("cps "+ digits);
-        boolean hasCFbyCpsCompact = normPath.contains("cps "+ digits);
-        boolean centerMatch = hasCFbyFull || hasCFbyCpsSpaced || hasCFbyCpsCompact;
-        return hasTerminal && centerMatch;
+        // 3) TERMINAL_CFXX (CF13, CF12, CF16, ...)
+        if (target.startsWith("terminal_cf")) {
+            String digits = extractCenterDigits(target); // "13"
+            if (digits.isBlank()) return false;
+
+            boolean hasTerminal = normPath.contains("terminal");
+            // Segmento inferior
+            // Nombres posibles del centro
+            boolean cfFull = normPath.contains("centro federal no. "+ digits);
+            boolean cpsSpaced = normPath.contains("cps " + digits) || normPath.contains("cefereso " + digits);
+            boolean cpsCompact = normPath.contains("cps" + digits) || normPath.contains("cefereso" + digits);
+
+            boolean centerMatch = cfFull || cpsSpaced || cpsCompact;
+            return hasTerminal && centerMatch;
+        }
+
+        
+    // 4) Otros (si agregas más campos canónicos)
+    // Igualdad directa por celda o por cualquier segmento de ruta
+    if (normCell.equals(target)) return true;
+    for (String seg : normPath.split(">")) if (seg.trim().equals(target)) return true;
+
+    return false;
+
+    }
+
+    // === ALIASES para nombres canónicos ===//
+    //Se usará "MODULO_UBICACIÓN", "FECHA", "HORA", "TERMINAL_CF13/12/16...
+    private static final Set<String> MODULO_UBI_ALIASES=Set.of("modulo", "módulo", "ubicacion", "ubicación", "ubicacion exp",
+                                                                "ubicación exp", "modulo/ubicacion", "módulo/ubicación", "ubicacion.", "ubicación.");
+
+    //En algunos libros FECHA/HORA vienen bajo "DATOS DE LA CITA"
+    private static final Set<String> FECHA_ALIASES = Set.of("fecha", "f. cita", "fecha de cita");
+    private static final Set<String> HORA_ALIASES =  Set.of("hora", "h. cita", "hora de cita");
+
+    //Normaliza un label "canónico" (lo que el usuario pide 'columns')
+    private static String normalizeCanonical(String s){
+        return normalize(s).replace("/", "_").replace("-", "_").replace(".", "").trim();
+    }
+
+    // Convierte "TERMINAL_CF13" -> "13", "terminal_cf16" -> "16"
+    private static String extractCenterDigits(String canonicalTarget){
+        String norm = normalizeCanonical(canonicalTarget);
+        if (!norm.startsWith("terminal_cf")) return "";
+        return norm.replaceFirst("^terminal_cf\\s*", "");
     }
 }
 
