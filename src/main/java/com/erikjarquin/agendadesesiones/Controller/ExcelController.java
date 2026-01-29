@@ -33,18 +33,18 @@ public class ExcelController {
     public ResponseEntity<?> parseExcelSelectingColumns(
         @RequestPart("file") MultipartFile file,
         @RequestParam(name="sheetIndex", required = false) Integer sheetIndex,
-        //Ahora el default muestra CF13 y también CF12/CF16 si quieres verlos (el filtro terminal aplica solo a CF13)
-        @RequestParam(name = "colums", required = false, defaultValue = "UBICACIÓN, NOMBRE, FECHA, HORA, TERMINAL_CF13, TERMINAL_CF12, TERMINAL_CF16") String columnsCsv,
+        // Columnas canónicas estandarizadas; agrega/quita CF12//CF16 según quieras verlas
+        @RequestParam(name = "colums", required = false, defaultValue = "MODULO_UBICACIÓN, FECHA, HORA, TERMINAL_CF13, TERMINAL_CF12, TERMINAL_CF16") String columnsCsv,
         @RequestParam(name = "headerSearchRows", required = false, defaultValue = "60") Integer headerSearchRows,
         @RequestParam(name = "stopAfterEmptyRows", required = false, defaultValue = "20") Integer stopAfterEmptyRows,
-        //Filtros nuevos
-        @RequestParam(name = "terminal", required = false) String filtroTerminal,
-        @RequestParam(name = "ubicación", required = false) String filtroUbicacion,
+        //Filtros canónicos
+        @RequestParam(name = "terminal", required = false) String filtroTerminalCf13,
+        @RequestParam(name = "modulo", required = false) String filtroModuloUbic,
         @RequestParam(name = "fecha", required = false) String filtroFecha
     ) throws Exception {
         //Permite columnas separadas por coma, con/ sin espacios
         List<String> desired = Arrays.stream(columnsCsv.split(",")).map(String::trim).filter(s -> !s.isBlank()).collect(Collectors.toList());
-        var resp = excelSelectService.parseSelectingColumns(file, sheetIndex, desired, headerSearchRows, stopAfterEmptyRows, filtroTerminal, filtroUbicacion, filtroFecha);
+        var resp = excelSelectService.parseSelectingColumns(file, sheetIndex, desired, headerSearchRows, stopAfterEmptyRows, filtroTerminalCf13, filtroModuloUbic, filtroFecha);
         return ResponseEntity.ok(resp);
     }
 

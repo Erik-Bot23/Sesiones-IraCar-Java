@@ -69,7 +69,7 @@
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const API_URL='/api/excel/parse/select'; //Como se sirve desde el mismos backend, no hay CORS
-            const TARGET_COLUMNS = ["UBICACIÓN","NOMBRE","FECHA","HORA", "TERMINAL_CF13"];
+            const TARGET_COLUMNS = ["MODULO_UBICACION","FECHA","HORA", "TERMINAL_CF13", "TERMINAL_CF16"];
             const MAX_PREVIEW_ROWS = 500; // limita el render para mantener la UI fluida
 
             const els = {
@@ -177,7 +177,10 @@
                     const form = new FormData();
                     form.append('file', file);
                     const columnsParam=encodeURIComponent(TARGET_COLUMNS.join(','));
-                    const url = `${API_URL}?sheetIndex=${encodeURIComponent(sheetIndex)}&columns=${columnsParam}`;
+                    const url = `${API_URL}?sheetIndex=${sheetIndex}` + `&columns=${columnsParam}`
+                                + `&terminalCf13=${encodeURIComponent(inputTerminal.value)}`
+                                + `&modulo=${encodeURIComponent(inputModulo.value)}`
+                                + `&fecha=${encodeURIComponent(inputFecha.value)}`;
 
                     const resp = await fetch(url, {method: 'POST', body:form});
                     const contentType = resp.headers.get('content-type') || '';

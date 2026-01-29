@@ -18,11 +18,11 @@ public class ExcelSelectService {
 
     public ExcelSelectColumnsResponse parseSelectingColumns(MultipartFile file,
                                                             Integer sheetIndex,
-                                                            List<String> desiredColumns,
+                                                            List<String> desiredCanonicalColumns, //Ahora espera nombres canónicos
                                                             int headerSearchRows,
                                                             int stopAfterEmptyRows,
-                                                            String filtroTerminal,
-                                                            String filtroUbicación,
+                                                            String filtroTerminalCf13,
+                                                            String filtroModuloUbic,
                                                             String filtroFecha) throws Exception {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("No se recibió archivo.");
@@ -43,21 +43,17 @@ public class ExcelSelectService {
             DataFormatter fmt = new DataFormatter();
 
             // Normaliza columnas deseadas (admite TERMINAL_CF13 / TERMINAL_CF12)
-            List <String> targets = desiredColumns.stream().map(s -> {
-                String n = normalize(s);
-                if (n.equals("terminal_cf13") || n.equals("terminal_cf12")) return n;
-                return n;
-            }).toList();
+            List <String> targets = desiredCanonicalColumns.stream().map(ExcelSelectService::normalizeCanonical).toList();
 
             // Buscamos la fila de encabezados (la primera donde aparezcan TODOS los targets)
             HeaderDetection hd = findHeaderRowAndColumns(sheet, fmt, targets, headerSearchRows);
             if (hd == null || hd.colIndexByTarget.size() < targets.size()) {
-                throw new IllegalArgumentException("No se pudieron localizar todas las columnas objetivo: " + desiredColumns);
+                throw new IllegalArgumentException("No se pudieron localizar todas las columnas objetivo: " + desiredCanonicalColumns);
             }
 
             int dataStart = hd.headerRow + 1;
 
-            // Lee todas las filas
+            // Lee filas y arma valores normalizados por columna canónica
             List<List<String>> allRows = new ArrayList<>();
             int emptyInARow = 0;
             for (int r = dataStart; r <= sheet.getLastRowNum(); r++) {
@@ -70,16 +66,28 @@ public class ExcelSelectService {
 
                 List<String> out = new ArrayList<>();
                 boolean allEmpty = true;
-                for (String t : targets) {
-                    int c = hd.colIndexByTarget.get(t);
-                    String val = getCellAsString(fmt, row, c);
-                    if (val != null && !val.isBlank()) allEmpty = false;
-                    out.add(val);
-                }
 
-                if (allEmpty) {
-                    emptyInARow++;
-                    if (emptyInARow >= stopAfterEmptyRows) break;
+                for (String canonical : targets) {
+                    int c = hd.colIndexByTarget.get(canonical); //Índice de esa columna detectada
+                    String raw = getCellAsString(fmt, row, c);
+
+                    String val = raw;
+                    switch (canonical) {
+                        case "modulo_ubicacion" -> {
+                            val = (raw == null ? "" : raw.trim().toUpperCase());
+                        }
+                        case "fecha" -> val = normalizeDateValue(raw);
+                        case "hora" -> val = normalizeTimeValue(raw);
+                        default -> {
+                            // Terminales u otros: dejar como están, solo trim
+                            val = (raw == null ? "" : raw.trim()); 
+                        }
+                    }
+                        if (!val.isBlank()) allEmpty = false;
+                        out.add(val);
+                }
+                if (allEmpty){
+                    if (++emptyInARow >= stopAfterEmptyRows) break;
                 } else {
                     emptyInARow = 0;
                     allRows.add(out);
@@ -87,43 +95,24 @@ public class ExcelSelectService {
             }
 
             //=== Filtros ===//
-            final List<String> headerPretty = desiredColumns; // Columnas como las pidió el usurio
+            final List<String> headerPretty = desiredCanonicalColumns; // Columnas como las pidió el usurio
             //Índices de columnas para filtrar (normalizados)
-            int idxUbic = indexOfNormalized(headerPretty, "ubicación");
-
-            // Esta línea para que sirve?, ya que si la desmarco me marco error en la variable idxUbic en el if de la línea 113
-            //if (idxUbic < 0) idxUbic = indexOfNormalized(headerPretty, "ubicación"); 
-
+            int idxModulo = indexOfNormalized(headerPretty, "modulo_ubicación");
             int idxFecha = indexOfNormalized(headerPretty, "fecha");
+            int idxTerm13 = indexOfNormalized(headerPretty, "terminal_cf13");
 
-            // Índeces para terminales por centro (puede que existan varios, pero el filtro sÓlo se aplica a CF13)
-            int idxTermCF13 = indexOfNormalized(headerPretty,"terminal_cf13");
-            //Si además  muestras CF12/CF16/etc. Se verán en la tabla, pero no se usarán para filtrar
-            int idxTermCF12 = indexOfNormalized(headerPretty,"terminal_cf12");
-            int idxTermCF16 = indexOfNormalized(headerPretty,"terminal_cf16");
-            // ... (puedes terner más si los agregas en columns)
-
-            String fTerm = normalizeNullable(filtroTerminal);
-            String fUbic = normalizeNullable(filtroUbicación);
+            String fModulo = normalizeNullable(filtroModuloUbic);
             String fFecha = normalizeNullable(filtroFecha);
+            String fTerm13 = normalizeNullable(filtroTerminalCf13);
 
             List<List<String>> filtered = allRows.stream().filter(row ->{
                 boolean ok = true;
 
-                if (fUbic != null && idxUbic >= 0){
-                    String v = normalize(row.get(idxUbic));
-                    ok &= v.contains(fUbic);
-                }
+                if (fModulo != null && idxModulo >= 0) ok &=normalize(row.get(idxModulo)).contains(fModulo);
 
-                if (fFecha != null && idxFecha >= 0){
-                    String v = normalize(row.get(idxFecha));
-                    ok &= v.contains(fFecha);
-                }
-
-                if (fTerm != null && idxTermCF13 >= 0){
-                    String v13 = normalize(row.get(idxTermCF13));
-                    ok &= v13.contains(fTerm);
-                }
+                if (fFecha != null && idxFecha >= 0) ok &=normalize(row.get(idxFecha)).contains(fFecha);
+                // SOLO aplica a CF13
+                if (fTerm13 != null && idxTerm13 >= 0) ok &=normalize(row.get(idxTerm13)).contains(fTerm13);
                 return ok;
             }).toList();
 
@@ -153,44 +142,158 @@ public class ExcelSelectService {
         return normalize(s);
     }
 
+    // Normaliza fecha a yyyy-MM-dd (acepta dd/MM/yyyy), dd-MM-yyyy, yyyy-MM-dd, ddMMyyyy)
+    private static String normalizeDateValue(String s){
+        if (s==null) return "";
+        String v = s.trim().replace(".", "/").replace("-","/");
+        try {
+            // yyyy/MM/dd
+            if (v.matches("\\d{4}/\\d{1,2}/\\d{1,2}")) {
+                var dt = java.time.LocalDate.parse(v, java.time.format.DateTimeFormatter.ofPattern("yyyy/M/d"));
+                return dt.toString(); // yyyy-MM-dd
+            }
+            // dd/MM/yyyy
+            if (v.matches("\\d{1,2}/\\d{1,2}/\\d{4}")){
+                var dt = java.time.LocalDate.parse(v,java.time.format.DateTimeFormatter.ofPattern("d/M/yyyy"));
+                return dt.toString();
+            }
+            // ddMMyyyy
+            if (v.matches("\\d{8}")){
+                String dd = v.substring(0,2), mm = v.substring(2, 4), yyyy = v.substring(4, 8);
+                var dt = java.time.LocalDate.parse(dd + "/" + mm + "/" + yyyy, java.time.format.DateTimeFormatter.ofPattern("d/M/yyyy"));
+                return dt.toString();
+            }
+        } catch (Exception ignore){}
+        return s.trim(); //fallback
+    }
+
+    // Normaliza hora a HH:mm (acepta H:mm, HH:mm, 11.00 -> 11:00)
+    private static String normalizeTimeValue(String s){
+        if (s == null) return "";
+        String v = s.trim().replace(".", ":");
+        try {
+            if (v.matches("\\d{1,2}:\\{2}")){
+                var t = java.time.LocalTime.parse(v, java.time.format.DateTimeFormatter.ofPattern("H:mm"));
+                return t.toString().substring(0,5); //HH:mm
+            }
+        } catch (Exception ignore) {}
+        return s.trim();
+    }
+
+    // Devuelve la ruta de encabezados en bruto (sin normalizar) top->down, separada por " > "
+    private static String headerPathRaw(Sheet sheet, DataFormatter fmt, int rowIndex, int colIndex, int lookUpLevels){
+        List<String> parts = new ArrayList<>();
+        for (int i = 0; i <= lookUpLevels; i++){
+            int r = rowIndex - i;
+            if (r<0) break;
+            Row row = sheet.getRow(r);
+            if (row == null) continue;
+            Cell cell = row.getCell(colIndex, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL);
+            String txt = cell != null ? fmt.formatCellValue(cell) : "";
+            if (txt == null || txt.isBlank()){
+                // si está en merged, toma la celda superior izquierda
+                for (var region : sheet.getMergedRegions()){
+                    if (region.isInRange(r, colIndex)) {
+                        Row top = sheet.getRow(region.getFirstRow());
+                        if (top!= null){
+                            Cell tc = top.getCell(region.getFirstColumn(), Row.MissingCellPolicy.RETURN_BLANK_AS_NULL);
+                            txt = tc != null ? fmt.formatCellValue(tc) : "";
+                        }
+                        break;
+                    }
+                }
+            }
+            if (txt != null && !txt.isBlank()) parts.add(txt.trim());
+        }
+        Collections.reverse(parts);
+        return String.join(" > ", parts);
+    }
+
+    //Representa una columna dinámica "Termina - {Centro}"
+    private static class TerminalCol {
+        String canonicalKey; // ej: terminal_cf16, terminal_marina, terminal_otro...
+        String displayLabel; // ej: "Terminal - CEFERESO No. 16"
+        int colIndex;
+        TerminalCol(String key, String label, int idx){
+            this.canonicalKey = key;
+            this.displayLabel = label;
+            this.colIndex = idx;
+        }
+
+        // Extrae (key, label) del path (normalizado y raw)
+        private static TerminalCol extractTerminalKeyAndLabelFromPaths(String normPath, String rawPath, int colIndex){
+            // Busca el segmento "centro" en el path crudo para el label
+            String displayCenter = null;
+            for(String seg : rawPath.split(">")){
+                String s = seg.trim();
+                String sn = normalize(s);
+                if (sn.contains("centro federal no") || sn.contains("cefereso no.") || sn.matches(".*\\bcps\\b.*") || sn.contains("marina")){
+                    displayCenter = s;
+                    break;
+                }
+            }
+
+            if (displayCenter == null){
+                // Fallback: intenta deducir desde normpath
+                displayCenter = "OTRO CENTRO";
+            }
+
+            // Detecta CFxx o MARINA para la key canónica
+            String key = "terminal_otro";
+            //CFxx por distintas formas  (centro federal / cefereso / cps)
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile(".*(?:centro federal no\\.|cefereso no\\.|cps)\\s*(\\d+).*").matcher(normPath);
+            if (m.matches()){
+                key = "terminal_cf" + m.group(1);
+            } else if (normPath.contains("marina")) {
+                key = "terminal_marina";
+            }
+            String label = "Terminal - " + displayCenter.toUpperCase();
+            return new TerminalCol(key, label, colIndex);
+        }
+    }
+
+    
+
+
+
     // === Utilidades ===
     private static class HeaderDetection {
         int headerRow;
         Map<String, Integer> colIndexByTarget; // clave = target normalizado, valor = índice de columna
     }
 
-    private static HeaderDetection findHeaderRowAndColumns(Sheet sheet, DataFormatter fmt, List<String> targetsRaw, int searchRows) {
-        // Normaliza targets (ej. ubicación, fecha, hora, nombre, terminal_cf13, terminal_cf12, ...)
-        List<String> targets = targetsRaw.stream().map(ExcelSelectService::normalize).toList();
-        int lastRow = Math.min(sheet.getLastRowNum(), searchRows);
-        int maxCols = estimateMaxCols(sheet, 5);
+    private static HeaderDetection findHeaderRowAndColumns(Sheet sheet, DataFormatter fmt, List<String> canonicalTargets, int searchRows) {
+       List<String> targets = canonicalTargets.stream().map(ExcelSelectService::normalizeCanonical).toList();
+       int lastRow = Math.min(sheet.getLastRowNum(), searchRows);
+       int maxCols = estimateMaxCols(sheet, 5);
 
-        for (int r=0; r<=lastRow; r++){
+       for (int r=0; r<=lastRow;r++){
             Row row = sheet.getRow(r);
-            if (row==null) continue;
+            if (row == null) continue;
 
             Map<String, Integer> found = new HashMap<>();
-            for (int c=0; c<= maxCols; c++){
-                String cellText = headerTextWithMergedFallback(sheet, fmt, r, c, 2).trim();
+            for (int c = 0; c < maxCols; c++){
+                String cellText = headerTextWithMergedFallback(sheet, fmt, r, c, 3).trim();
                 if (cellText.isBlank()) continue;
 
                 String normCell = normalize(cellText);
-                String normPath = headerPathNormalized(sheet, fmt, r, c, 3); //Top->Down
+                String normPath = headerPathNormalized(sheet, fmt, r, c, 4); //top->down
 
-                for(String target : targets){
+                for (String target : targets){
                     if (!found.containsKey(target) && matchesTargetWithHierarchy(target, normCell, normPath)){
                         found.put(target, c);
                     }
                 }
             }
-            if (found.size() == targets.size()) {
+
+            if (found.size() == targets.size()){
                 HeaderDetection hd = new HeaderDetection();
                 hd.headerRow = r;
                 hd.colIndexByTarget = found;
                 return hd;
             }
-        }
-        return null;
+       }
+       return null;
     }
 
     private static int estimateMaxCols(Sheet sheet, int sampleRows) {
@@ -320,7 +423,6 @@ public class ExcelSelectService {
     for (String seg : normPath.split(">")) if (seg.trim().equals(target)) return true;
 
     return false;
-
     }
 
     // === ALIASES para nombres canónicos ===//
