@@ -1,21 +1,16 @@
 package com.erikjarquin.agendadesesiones.Service;
 
 import com.erikjarquin.agendadesesiones.DTO.ExcelSelectColumnsResponse;
-
-import org.apache.poi.ss.format.CellTextFormatter;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
-
 import java.io.InputStream;
 import java.text.Normalizer;
 import java.util.*;
-import java.util.stream.Collectors;
 
 @Service
 public class ExcelSelectService {
-
     public ExcelSelectColumnsResponse parseSelectingColumns(MultipartFile file,
                                                             Integer sheetIndex,
                                                             List<String> desiredCanonicalColumns, //Ahora espera nombres canónicos
@@ -53,6 +48,31 @@ public class ExcelSelectService {
 
             int dataStart = hd.headerRow + 1;
 
+            // 1) Construye el orden canónico base (lo que pidió el cliente)
+            List<String> canonicalOrder = new ArrayList<>(targets);
+
+            // 2) Agrega terminales dinámicas detectadas (excluye CF13 para no duplicar)
+            int maxCols = estimateMaxCols(sheet, 5);
+            List<TerminalCol> dynamicTerms = scanDynamicTerminalColumns(sheet, fmt, hd.headerRow, maxCols, true); 
+
+            // 3) Mapa columna -> índice consolidado (base + dinámicas)
+            Map<String, Integer> colIndexByCanonical = new HashMap<>(hd.colIndexByTarget);
+            for (TerminalCol tc : dynamicTerms) {
+                // si por alguna razón ya existía e  el base, respeta el base
+                colIndexByCanonical.putIfAbsent(tc.canonicalKey, tc.colIndex);
+                // Agrega al orden canónico si no estaba
+                if (!canonicalOrder.contains(tc.canonicalKey)){
+                    canonicalOrder.add(tc.canonicalKey);
+                }
+            }
+
+            // 4) Construye los header "bonitos" a devolver: los que pidió el cliente se respetan
+            // y para las dinámicas usamos el label real del centro.
+            List<String> prettyHeaders = new ArrayList<>(desiredCanonicalColumns);
+            for(TerminalCol tc : dynamicTerms){
+                prettyHeaders.add(tc.displayLabel);
+            }
+
             // Lee filas y arma valores normalizados por columna canónica
             List<List<String>> allRows = new ArrayList<>();
             int emptyInARow = 0;
@@ -66,10 +86,9 @@ public class ExcelSelectService {
 
                 List<String> out = new ArrayList<>();
                 boolean allEmpty = true;
-
-                for (String canonical : targets) {
-                    int c = hd.colIndexByTarget.get(canonical); //Índice de esa columna detectada
-                    String raw = getCellAsString(fmt, row, c);
+                for (String canonical : canonicalOrder) {
+                    Integer c = colIndexByCanonical.get(canonical); //Índice de esa columna detectada
+                    String raw = (c == null) ? "" : getCellAsString(fmt, row, c);
 
                     String val = raw;
                     switch (canonical) {
@@ -95,11 +114,10 @@ public class ExcelSelectService {
             }
 
             //=== Filtros ===//
-            final List<String> headerPretty = desiredCanonicalColumns; // Columnas como las pidió el usurio
-            //Índices de columnas para filtrar (normalizados)
-            int idxModulo = indexOfNormalized(headerPretty, "modulo_ubicación");
-            int idxFecha = indexOfNormalized(headerPretty, "fecha");
-            int idxTerm13 = indexOfNormalized(headerPretty, "terminal_cf13");
+            // === Índices por clave canónica (alineados con "canonicalOrder") === //
+            int idxModuloCanon = canonicalOrder.indexOf("modulo_ubicacion");
+            int idxFechaCanon = canonicalOrder.indexOf("fecha");
+            int idxTerm13Canon = canonicalOrder.indexOf("terminal_cf13");
 
             String fModulo = normalizeNullable(filtroModuloUbic);
             String fFecha = normalizeNullable(filtroFecha);
@@ -108,18 +126,17 @@ public class ExcelSelectService {
             List<List<String>> filtered = allRows.stream().filter(row ->{
                 boolean ok = true;
 
-                if (fModulo != null && idxModulo >= 0) ok &=normalize(row.get(idxModulo)).contains(fModulo);
-
-                if (fFecha != null && idxFecha >= 0) ok &=normalize(row.get(idxFecha)).contains(fFecha);
+                if (fModulo != null && idxModuloCanon >= 0) ok &=normalize(row.get(idxModuloCanon)).contains(fModulo);
+                if (fFecha != null && idxFechaCanon >= 0) ok &=normalize(row.get(idxFechaCanon)).contains(fFecha);
                 // SOLO aplica a CF13
-                if (fTerm13 != null && idxTerm13 >= 0) ok &=normalize(row.get(idxTerm13)).contains(fTerm13);
+                if (fTerm13 != null && idxTerm13Canon >= 0) ok &=normalize(row.get(idxTerm13Canon)).contains(fTerm13);
                 return ok;
             }).toList();
 
             // Devuelve las columnas en su forma “bonita” original (las que pidió el usuario)
             return new ExcelSelectColumnsResponse(
                     sheetName,
-                    headerPretty,
+                    prettyHeaders, // Titulos a mostrar (incluye "Terminal-CEFERESO No. X", "Terminal-MARINA", etc.)
                     filtered,
                     hd.headerRow,
                     dataStart
@@ -128,15 +145,6 @@ public class ExcelSelectService {
     }
 
     //=== Helpers para filtros ===//
-    private static int indexOfNormalized(List<String> headers, String target){
-        String t = normalize(target);
-        for (int i=0; i<headers.size();i++){
-            String h = headers.get(i);
-            if (normalize(h).equals(t)) return i;
-        }
-        return -1;
-    }
-
     private static String normalizeNullable(String s){
         if (s==null || s.isBlank()) return null;
         return normalize(s);
@@ -172,7 +180,7 @@ public class ExcelSelectService {
         if (s == null) return "";
         String v = s.trim().replace(".", ":");
         try {
-            if (v.matches("\\d{1,2}:\\{2}")){
+            if (v.matches("\\d{1,2}:\\d{2}")){
                 var t = java.time.LocalTime.parse(v, java.time.format.DateTimeFormatter.ofPattern("H:mm"));
                 return t.toString().substring(0,5); //HH:mm
             }
@@ -209,7 +217,7 @@ public class ExcelSelectService {
         return String.join(" > ", parts);
     }
 
-    //Representa una columna dinámica "Termina - {Centro}"
+    // Representa una columna dinámica "Termina - {Centro}"
     private static class TerminalCol {
         String canonicalKey; // ej: terminal_cf16, terminal_marina, terminal_otro...
         String displayLabel; // ej: "Terminal - CEFERESO No. 16"
@@ -219,44 +227,60 @@ public class ExcelSelectService {
             this.displayLabel = label;
             this.colIndex = idx;
         }
-
-        // Extrae (key, label) del path (normalizado y raw)
-        private static TerminalCol extractTerminalKeyAndLabelFromPaths(String normPath, String rawPath, int colIndex){
-            // Busca el segmento "centro" en el path crudo para el label
-            String displayCenter = null;
-            for(String seg : rawPath.split(">")){
-                String s = seg.trim();
-                String sn = normalize(s);
-                if (sn.contains("centro federal no") || sn.contains("cefereso no.") || sn.matches(".*\\bcps\\b.*") || sn.contains("marina")){
-                    displayCenter = s;
-                    break;
-                }
-            }
-
-            if (displayCenter == null){
-                // Fallback: intenta deducir desde normpath
-                displayCenter = "OTRO CENTRO";
-            }
-
-            // Detecta CFxx o MARINA para la key canónica
-            String key = "terminal_otro";
-            //CFxx por distintas formas  (centro federal / cefereso / cps)
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile(".*(?:centro federal no\\.|cefereso no\\.|cps)\\s*(\\d+).*").matcher(normPath);
-            if (m.matches()){
-                key = "terminal_cf" + m.group(1);
-            } else if (normPath.contains("marina")) {
-                key = "terminal_marina";
-            }
-            String label = "Terminal - " + displayCenter.toUpperCase();
-            return new TerminalCol(key, label, colIndex);
-        }
     }
 
+    // Extrae (key, label) del path (normalizado y raw)
+    private static TerminalCol extractTerminalKeyAndLabelFromPaths(String normPath, String rawPath, int colIndex){
+        // Busca el segmento "centro" en el path crudo para el label
+        String displayCenter = null;
+        for(String seg : rawPath.split(">")){
+            String s = seg.trim();
+            String sn = normalize(s);
+            if (sn.contains("centro federal no") || sn.contains("cefereso no.") || sn.matches(".*\\bcps\\b.*") || sn.contains("marina")){
+                displayCenter = s;
+                break;
+            }
+        }
+
+        if (displayCenter == null){
+            // Fallback: intenta deducir desde normpath
+            displayCenter = "OTRO CENTRO";
+        }
+
+        // Detecta CFxx o MARINA para la key canónica
+        String key = "terminal_otro";
+
+        //CFxx por distintas formas  (centro federal / cefereso / cps)
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(".*(?:centro federal no\\.|cefereso no\\.|cps)\\s*(\\d+).*").matcher(normPath);
+        if (m.matches()){
+            key = "terminal_cf" + m.group(1);
+        } else if (normPath.contains("marina")) {
+            key = "terminal_marina";
+        }
+        String label = "Terminal - " + displayCenter.toUpperCase();
+        return new TerminalCol(key, label, colIndex);
+    }
     
+    // Recorre columnas en la fila de encabezado detectada y encuentra TODAS las columnas "Terminal" debajo de cualquier centro
+    // Extrae CF13 si quieres que solo exista una columna CF13 (la fija)
+    private static List<TerminalCol> scanDynamicTerminalColumns(Sheet sheet, DataFormatter fmt, int headerRow, int maxCols, boolean excludeCF13){
+        List<TerminalCol> list = new ArrayList<>();
+        Set<String> seenKeys = new HashSet<>();
+        for (int c=0; c<maxCols; c++){
+            String normPath = headerPathNormalized(sheet, fmt, headerRow, c, 4);
+            if (!normPath.contains("terminal")) continue; // Solo columnas con "terminal" en la jerarquía
+            String rawPath = headerPathRaw(sheet, fmt, headerRow, c, 4);
 
+            TerminalCol tc = extractTerminalKeyAndLabelFromPaths(normPath, rawPath, c);
+            if (excludeCF13 && "terminal_cf13".equals(tc.canonicalKey)) continue; // Ya la proveemos fija
+            if (seenKeys.add(tc.canonicalKey)){
+                list.add(tc);
+            }
+        }
+        return list;
+    }
 
-
-    // === Utilidades ===
+    // === Utilidades === //
     private static class HeaderDetection {
         int headerRow;
         Map<String, Integer> colIndexByTarget; // clave = target normalizado, valor = índice de columna
@@ -270,7 +294,6 @@ public class ExcelSelectService {
        for (int r=0; r<=lastRow;r++){
             Row row = sheet.getRow(r);
             if (row == null) continue;
-
             Map<String, Integer> found = new HashMap<>();
             for (int c = 0; c < maxCols; c++){
                 String cellText = headerTextWithMergedFallback(sheet, fmt, r, c, 3).trim();
@@ -330,7 +353,7 @@ public class ExcelSelectService {
         Cell cell = row.getCell(colIndex, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL);
         String txt = cell != null ? fmt.formatCellValue(cell) : "";
         if (txt != null && !txt.isBlank()) return txt;
-
+        
         // Si está dentro de una región combinada, toma el valor de la celda superior izquierda de la región
         for (CellRangeAddress region : sheet.getMergedRegions()) {
             if (region.isInRange(rowIndex, colIndex)) {
@@ -363,12 +386,11 @@ public class ExcelSelectService {
         for (int i = 0; i <= lookUpLevels; i++){
             int r = rowIndex - i;
             if (r<0) break;
-            String t = getCellTextResolvingMerged(sheet, fmt, rowIndex, colIndex);
+            String t = getCellTextResolvingMerged(sheet, fmt, r, colIndex);
             if (t != null && !t.isBlank()) {
                 parts.add(normalize(t));
             } 
         }
-
         // La ruta de arriba hacia abajo (top->down) ayuda a "contiene...terminal"
         Collections.reverse(parts);
         return String.join(" > ", parts);
@@ -384,7 +406,7 @@ public class ExcelSelectService {
             for (String seg : normPath.split(">")){
                 if (MODULO_UBI_ALIASES.contains(seg.trim())) return true;
             } 
-            return true;
+            return false;
         }
 
         // 2) FECHA / HORA
@@ -405,36 +427,34 @@ public class ExcelSelectService {
             String digits = extractCenterDigits(target); // "13"
             if (digits.isBlank()) return false;
 
-            boolean hasTerminal = normPath.contains("terminal");
-            // Segmento inferior
+            boolean hasTerminal = normPath.contains("terminal"); // Segmento inferior
             // Nombres posibles del centro
             boolean cfFull = normPath.contains("centro federal no. "+ digits);
             boolean cpsSpaced = normPath.contains("cps " + digits) || normPath.contains("cefereso " + digits);
             boolean cpsCompact = normPath.contains("cps" + digits) || normPath.contains("cefereso" + digits);
-
             boolean centerMatch = cfFull || cpsSpaced || cpsCompact;
             return hasTerminal && centerMatch;
         }
 
         
-    // 4) Otros (si agregas más campos canónicos)
-    // Igualdad directa por celda o por cualquier segmento de ruta
-    if (normCell.equals(target)) return true;
-    for (String seg : normPath.split(">")) if (seg.trim().equals(target)) return true;
+        // 4) Otros (si agregas más campos canónicos)
+        // Igualdad directa por celda o por cualquier segmento de ruta
+        if (normCell.equals(target)) return true;
+        for (String seg : normPath.split(">")) if (seg.trim().equals(target)) return true;
 
-    return false;
+        return false;
     }
 
     // === ALIASES para nombres canónicos ===//
-    //Se usará "MODULO_UBICACIÓN", "FECHA", "HORA", "TERMINAL_CF13/12/16...
+    // Se usará "MODULO_UBICACIÓN", "FECHA", "HORA", "TERMINAL_CF13/12/16...
     private static final Set<String> MODULO_UBI_ALIASES=Set.of("modulo", "módulo", "ubicacion", "ubicación", "ubicacion exp",
                                                                 "ubicación exp", "modulo/ubicacion", "módulo/ubicación", "ubicacion.", "ubicación.");
 
-    //En algunos libros FECHA/HORA vienen bajo "DATOS DE LA CITA"
+    // En algunos libros FECHA/HORA vienen bajo "DATOS DE LA CITA"
     private static final Set<String> FECHA_ALIASES = Set.of("fecha", "f. cita", "fecha de cita");
     private static final Set<String> HORA_ALIASES =  Set.of("hora", "h. cita", "hora de cita");
 
-    //Normaliza un label "canónico" (lo que el usuario pide 'columns')
+    // Normaliza un label "canónico" (lo que el usuario pide 'columns')
     private static String normalizeCanonical(String s){
         return normalize(s).replace("/", "_").replace("-", "_").replace(".", "").trim();
     }
